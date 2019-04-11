@@ -30,5 +30,12 @@ protected:
 	afx_msg void OnSysCommand(UINT nID, LPARAM lParam);
 	afx_msg void OnPaint();
 	afx_msg HCURSOR OnQueryDragIcon();
+	static UINT Thread(void * param);
 	DECLARE_MESSAGE_MAP()
+public:
+//	CButton my_string;
+	afx_msg void OnClickedButton2();
+//	CEdit my_cstring;
+	CString my_cstring;
+	afx_msg void OnClickedButton1();
 };
