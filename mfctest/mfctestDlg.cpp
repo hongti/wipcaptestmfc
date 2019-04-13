@@ -26,7 +26,7 @@ typedef struct ip_address {
 
 /* IPv4 首部 */
 typedef struct ip_header {
-	u_char  ver_ihl;        // 版本 (4 bits) + 首部长度 (4 bits)
+	u_char  ihl;            // 版本+首部长度   
 	u_char  tos;            // 服务类型(Type of service) 
 	u_short tlen;           // 总长(Total length) 
 	u_short identification; // 标识(Identification)
@@ -36,7 +36,6 @@ typedef struct ip_header {
 	u_short crc;            // 首部校验和(Header checksum)
 	ip_address  saddr;      // 源地址(Source address)
 	ip_address  daddr;      // 目的地址(Destination address)
-	u_int   op_pad;         // 选项与填充(Option + Padding)
 }ip_header;
 
 /* UDP 首部*/
@@ -47,7 +46,28 @@ typedef struct udp_header {
 	u_short crc;            // 校验和(Checksum)
 }udp_header;
 
-void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data);
+typedef struct tcp_header {
+	u_short sport;         /* source port */
+	u_short dport;         /* destination port */
+	u_int seq;             /* sequence number */
+	u_int ack;             /* acknowledgement number */
+	u_char  reserved_1;
+	u_char  thl;        
+	u_char  flag;       
+	u_char  reseverd_2;
+	u_short window;        /* window */
+	u_short sum;           /* checksum */
+	u_short urp;           /* urgent pointer */
+}tcp_header;
+
+typedef struct ethernet_header{
+	u_char   dest_mac[6];
+	u_char   src_mac[6];
+	u_short  eth_type;
+}ethernet_header;
+
+
+//void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data);
 
 pcap_if_t *alldevs;
 pcap_if_t *d;
@@ -56,8 +76,8 @@ int i = 0;
 int res;
 pcap_t *adhandle;
 char errbuf[PCAP_ERRBUF_SIZE];
-u_int netmask;
-char packet_filter[] = "ip and udp";
+//u_int netmask;
+//char packet_filter[] = "ip and udp";
 struct bpf_program fcode;
 struct pcap_pkthdr *header;
 const u_char *pkt_data;
@@ -257,43 +277,10 @@ void CmfctestDlg::OnClickedButton2()
 		exit(1);
 	}
 
-	if (d->addresses != NULL)
-		/* 获得接口第一个地址的掩码 */
-		netmask = ((struct sockaddr_in *)(d->addresses->netmask))->sin_addr.S_un.S_addr;
-	else
-		/* 如果接口没有地址，那么我们假设一个C类的掩码 */
-		netmask = 0xffffff;
-
-
-	//编译过滤器
-	if (pcap_compile(adhandle, &fcode, packet_filter, 1, netmask) < 0)
-	{
-		CString message = (CString)"Unable to compile the packet filter. Check the syntax.";
-		MessageBox(message);
-		//fprintf(stderr, "\nUnable to compile the packet filter. Check the syntax.\n");
-		/* 释放设备列表 */
-		pcap_freealldevs(alldevs);
-		exit(1);
-	}
-
-	//设置过滤器
-	if (pcap_setfilter(adhandle, &fcode) < 0)
-	{
-		CString message = (CString)"Error setting the filter.";
-		MessageBox(message);
-		//fprintf(stderr, "\nError setting the filter.\n");
-		/* 释放设备列表 */
-		pcap_freealldevs(alldevs);
-		exit(1);
-	}
-
 	pCtrl->AddString((CString) "listening on " + (CString)d->description + (CString)"...");
 
 	/* 释放设备列表 */
 	pcap_freealldevs(alldevs);
-
-	/* 开始捕获 */
-	//pcap_loop(adhandle, 0, packet_handler, NULL);
 
 	AfxBeginThread(Thread, this, THREAD_PRIORITY_IDLE);
 }
@@ -303,124 +290,182 @@ UINT CmfctestDlg::Thread(void *param)
 	CmfctestDlg *dlg = (CmfctestDlg*)param;
 	CListBox *pCtrl = (CListBox *)dlg->GetDlgItem(IDC_LIST2);
 	CString messageonlist2;
+	CStatic *pStext = (CStatic *)dlg->GetDlgItem(IDC_STATIC);
+	CString pakect_num;
 
 	/* 获取数据包 */
 	while ((res = pcap_next_ex(adhandle, &header, &pkt_data)) >= 0) {
-		ip_header *ih;
-		udp_header *uh;
-		time_t local_tv_sec;
-		u_int ip_len;
-		u_short sport, dport;
-		struct tm now_time;
-		char timestr[16];
-
 		if (res == 0)
 			/* 超时时间到 */
 			continue;
 
-		///* 将时间戳转换成可识别的格式 */
-		//local_tv_sec = header->ts.tv_sec;
-		//localtime_s(&now_time, &local_tv_sec);
-		//strftime(timestr, sizeof timestr, "%H:%M:%S", &now_time);
-		//
-		CString nowtime;
-		CTime time = CTime::GetCurrentTime();
-		nowtime = time.Format(_T("%H:%M:%S "));
+		u_short ethernet_type;//                                     /*以太网协议类型*/
+		ethernet_header *ethernet_protocol;//  /*以太网协议变量*/
+		u_char *mac_string;
+		static int packet_number = 1;
+		messageonlist2.Format(_T("第【%d】个IP数据包被捕获"), packet_number);
 
-		CString len;
-		len.Format(_T("%.6d len:%d "), header->ts.tv_usec, header->len);
-		//printf("%s,%.6d len:%d\n", timestr, header->ts.tv_usec, header->len);
-
-		ih = (ip_header *)(pkt_data +
-			14); //以太网头部长度
-
-		/* 获得UDP首部的位置 */
-		ip_len = (ih->ver_ihl & 0xf) * 4;
-		uh = (udp_header *)((u_char*)ih + ip_len);
-
-		/* 将网络字节序列转换成主机字节序列 */
-		sport = ntohs(uh->sport);
-		dport = ntohs(uh->dport);
-
-		/* 获得IP数据包头部的位置 */
-		ih = (ip_header *)(pkt_data +
-			14); //以太网头部长度
-
-		/* 获得UDP首部的位置 */
-		ip_len = (ih->ver_ihl & 0xf) * 4;
-		uh = (udp_header *)((u_char*)ih + ip_len);
-
-		/* 将网络字节序列转换成主机字节序列 */
-		sport = ntohs(uh->sport);
-		dport = ntohs(uh->dport);
-
-		CString ipudp;
-		ipudp.Format(_T("%d.%d.%d.%d.%d -> %d.%d.%d.%d.%d"),
-			ih->saddr.byte1,
-			ih->saddr.byte2,
-			ih->saddr.byte3,
-			ih->saddr.byte4,
-			sport,
-			ih->daddr.byte1,
-			ih->daddr.byte2,
-			ih->daddr.byte3,
-			ih->daddr.byte4,
-			dport);
-
-		messageonlist2 = nowtime + len + ipudp;
 		pCtrl->AddString(messageonlist2);
-	}
+		pCtrl->AddString(_T("#链路层(以太网协议)"));
 
-	if (res == -1) {
-		exit(1);
+		ethernet_protocol = (ethernet_header *)pkt_data;//  /*获得一太网协议数据内容*/
+		ethernet_type = ntohs(ethernet_protocol->eth_type); /*获得以太网类型*/
+		messageonlist2.Format(_T("##以太网类型为 : %04x"), ethernet_type);
+		pCtrl->AddString(messageonlist2);
+
+		switch (ethernet_type)//            /*判断以太网类型的值*/
+		{
+		case 0x0800:
+			pCtrl->AddString(_T("####网络层是：IPv4协议")); break;
+		case 0x0806:
+			pCtrl->AddString(_T("####网络层是：ARP协议")); break;
+		case 0x8035:
+			pCtrl->AddString(_T("####网络层是：RARP协议")); break;
+		default: break;
+		}
+		/*获得Mac源地址*/
+		mac_string = ethernet_protocol->src_mac;
+		messageonlist2.Format(_T("####Mac源地址:%02x:%02x:%02x:%02x:%02x:%02x:\n"), *mac_string, *(mac_string + 1), *(mac_string + 2), *(mac_string + 3), *(mac_string + 4), *(mac_string + 5));
+		pCtrl->AddString(messageonlist2);
+
+		/*获得Mac目的地址*/
+		mac_string = ethernet_protocol->dest_mac;
+		messageonlist2.Format(_T("####Mac目的地址:%02x:%02x:%02x:%02x:%02x:%02x:\n"), *mac_string, *(mac_string + 1), *(mac_string + 2), *(mac_string + 3), *(mac_string + 4), *(mac_string + 5));
+		pCtrl->AddString(messageonlist2);
+
+		if (ethernet_type == 0x0800) {
+			//        /*如果上层是IPv4ip协议,就调用分析ip协议的函数对ip包进行贩治*/ 
+			struct ip_header *ip_protocol;//   /*ip协议变量*/
+			u_int header_length;//    /*长度*/
+			u_int offset;//                   /*片偏移*/
+			u_int16_t checksum;//    /*首部检验和*/
+			ip_protocol = (struct ip_header*)(pkt_data + 14); /*获得ip数据包的内容去掉以太头部*/
+			checksum = ntohs(ip_protocol->crc);//      /*获得校验和*/
+			offset = ntohs(ip_protocol->flags_fo);//   /*获得偏移量*/
+			header_length = ip_protocol->ihl * 4;
+			pCtrl->AddString(_T("##网络层（IP协议）"));
+			messageonlist2.Format(_T("####IP版本:IPv4"));
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####IP协议首部长度:%d"), header_length);
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####服务类型:%d"), ip_protocol->tos);
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####总长度:%d"), ntohs(ip_protocol->tlen));/*获得总长度*/
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####标识:%d"), ntohs(ip_protocol->identification));/*获得标识*/
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####片偏移:%d"), (offset & 0x1fff) * 8);
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####生存时间:%d"), ip_protocol->ttl);
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####首部检验和:%d"), checksum);
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####源IP:%d.%d.%d.%d"), ip_protocol->saddr.byte1, ip_protocol->saddr.byte2, ip_protocol->saddr.byte3, ip_protocol->saddr.byte4);//          /*获得源ip地址*/
+			pCtrl->AddString(messageonlist2);
+			messageonlist2.Format(_T("####目的IP:%d.%d.%d.%d"), ip_protocol->daddr.byte1, ip_protocol->daddr.byte2, ip_protocol->daddr.byte3, ip_protocol->daddr.byte4);/*获得目的ip地址*/
+			pCtrl->AddString(messageonlist2);
+			printf("协议号:%d", ip_protocol->proto);//         /*获得协议类型*/
+			pCtrl->AddString(messageonlist2);
+			pCtrl->AddString(_T("##传输层协议是:"));
+			if (ip_protocol->proto == 6)
+			{
+				pCtrl->AddString(_T("####TCP"));
+				struct tcp_header *tcp_protocol;//     /*tcp协议变量*/
+				u_char flags;//                          /*标记*/
+				int header_length;//                  /*头长度*/
+				u_short source_port;//           /*源端口*/
+				u_short destination_port;//   /*目的端口*/
+				u_short windows;//                /*窗口大小*/
+				u_short urgent_pointer;//     /*紧急指针*/
+				u_int sequence;//                 /*序列号*/
+				u_int acknowledgement;//   /*确认号*/
+				u_int16_t checksum;//       /*检验和*/
+				tcp_protocol = (struct tcp_header *) (pkt_data + 14 + 20);//  /*获得tcp首部内容*/
+				source_port = ntohs(tcp_protocol->sport);//                  /*获得源端口号*/
+				destination_port = ntohs(tcp_protocol->dport); /*获得目的端口号*/
+				sequence = ntohl(tcp_protocol->seq);//        /*获得序列号*/
+				acknowledgement = ntohl(tcp_protocol->ack);
+				windows = ntohs(tcp_protocol->window);
+				urgent_pointer = ntohs(tcp_protocol->urp);
+				flags = tcp_protocol->flag;
+				checksum = ntohs(tcp_protocol->sum);
+				pCtrl->AddString(_T("####运输层（TCP协议）"));
+				messageonlist2.Format(_T("####源端口：%d"), source_port);
+				pCtrl->AddString(messageonlist2);
+				messageonlist2.Format(_T("####目的端口：\t %d\n"), destination_port);
+				pCtrl->AddString(messageonlist2);
+
+				int min = (destination_port < source_port) ? destination_port : source_port;
+				pCtrl->AddString(_T("##应用层协议是："));
+				switch (min)
+				{
+				case 80: {messageonlist2.Format(_T("#### http 用于万维网（WWW）服务的超文本传输协议（HTTP）"));
+					break; }
+
+				case 21: {messageonlist2.Format(_T("#### ftp 文件传输协议（FTP）"));
+					break; }
+
+				case 23: {messageonlist2.Format(_T("#### telnet Telnet 服务  "));
+					break; }
+
+				case 25: {messageonlist2.Format(_T("#### smtp 简单邮件传输协议（SMTP）"));
+					break; }
+
+				case 110: {messageonlist2.Format(_T("#### pop3 邮局协议版本3 "));
+					break; }
+				case 443: {messageonlist2.Format(_T("#### https 安全超文本传输协议（HTTP） "));
+					break; }
+
+				default: {messageonlist2.Format(_T("####【其他类型】 "));
+					break; }
+				}
+				messageonlist2.Format(_T("####序列号：%u"), sequence);
+				pCtrl->AddString(messageonlist2);
+				messageonlist2.Format(_T("####确认号：%u"), acknowledgement);
+				pCtrl->AddString(messageonlist2);
+				messageonlist2.Format(_T("####保留字段：%d"), tcp_protocol->reserved_1);
+				pCtrl->AddString(messageonlist2);
+
+				if (flags & 0x08) pCtrl->AddString(_T("####控制位：【推送 PSH】"));
+				if (flags & 0x10) pCtrl->AddString(_T("####控制位：【确认 ACK】"));
+				if (flags & 0x02) pCtrl->AddString(_T("####控制位：【同步 SYN】"));
+				if (flags & 0x20) pCtrl->AddString(_T("####控制位：【紧急 URG】"));
+				if (flags & 0x01) pCtrl->AddString(_T("####控制位：【终止 FIN】"));
+				if (flags & 0x04) pCtrl->AddString(_T("####控制位：【复位 RST】"));
+
+				messageonlist2.Format(_T("####窗口大小 :%d"), windows);
+				pCtrl->AddString(messageonlist2);
+				messageonlist2.Format(_T("####检验和 :%d"), checksum);
+				pCtrl->AddString(messageonlist2);
+				messageonlist2.Format(_T("####紧急指针字段 :%d"), urgent_pointer);
+				pCtrl->AddString(messageonlist2);
+				/*协议类型是6代表TCP*/
+			}
+			else if (ip_protocol->proto == 17) {
+				pCtrl->AddString(_T("UDP"));
+				/*17代表UDP*/
+			}
+			else if (ip_protocol->proto == 1) {
+				pCtrl->AddString(_T("ICMP"));
+				/*代表ICMP*/
+			}
+			else if (ip_protocol->proto == 2) {
+				pCtrl->AddString(_T("IGMP"));
+				/*代表IGMP*/
+			}
+		}
+
+		packet_number++;
+
+		pakect_num.Format(_T("当前抓取第%d个IP包！"), packet_number);
+		pStext->SetWindowText(pakect_num);
+
+		if (res == -1) {
+			exit(1);
+		}
 	}
 }
 
-//此处不使用回调函数，否则将导致程序死锁
-//void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data)
-//{
-//
-//	char timestr[16];
-//	struct tm now_time;
-//	ip_header *ih;
-//	udp_header *uh;
-//	u_int ip_len;
-//	u_short sport, dport;
-//	time_t local_tv_sec;
-//
-//	//将localtime修改为可使用的localtime_s
-//	/* 将时间戳转换成可识别的格式 */
-//	local_tv_sec = header->ts.tv_sec;
-//	localtime_s(&now_time, &local_tv_sec);
-//	strftime(timestr, sizeof timestr, "%H:%M:%S", &now_time);
-//
-//	printf("%s,%.6ld len:%d\n", timestr, header->ts.tv_usec, header->len);
-//
-//	/* 获得IP数据包头部的位置 */
-//	ih = (ip_header *)(pkt_data +
-//		14); //以太网头部长度
-//
-//	/* 获得UDP首部的位置 */
-//	ip_len = (ih->ver_ihl & 0xf) * 4;
-//	uh = (udp_header *)((u_char*)ih + ip_len);
-//
-//	/* 将网络字节序列转换成主机字节序列 */
-//	sport = ntohs(uh->sport);
-//	dport = ntohs(uh->dport);
-//
-//	/* 打印IP地址和UDP端口 */
-//	printf("%d.%d.%d.%d.%d -> %d.%d.%d.%d.%d\n",
-//		ih->saddr.byte1,
-//		ih->saddr.byte2,
-//		ih->saddr.byte3,
-//		ih->saddr.byte4,
-//		sport,
-//		ih->daddr.byte1,
-//		ih->daddr.byte2,
-//		ih->daddr.byte3,
-//		ih->daddr.byte4,
-//		dport);
-//}
 
 
 void CmfctestDlg::OnClickedButton1()
@@ -456,5 +501,3 @@ void CmfctestDlg::OnClickedButton1()
 	}
 
 }
-
-
